@@ -1,326 +1,242 @@
-/* Mansour Cup 2026 - Robust CSV-driven front-end (no external libs) */
-const CupApp = (() => {
+/*!
+ * MBZ Cup 2026 – Direct Google Sheets CSV (Option B)
+ * Drop-in main.js replacement that loads matches from a published Google Sheets CSV.
+ * ✅ No design/CSS changes (data only).
+ *
+ * How it works:
+ * - Fetch CSV -> parse -> normalize fields
+ * - Expose data as window.MBZ_DATA
+ * - Try to call existing render functions if they already exist (backward compatible)
+ * - Always dispatch a CustomEvent: "mbz:data" with { matches, topScorers }
+ *
+ * You ONLY need to paste your published CSV URL in CONFIG.CSV_URL below.
+ */
 
-  function qs(sel){ return document.querySelector(sel); }
-  function qsa(sel){ return Array.from(document.querySelectorAll(sel)); }
+(function () {
+  "use strict";
 
-  function getParam(name){
-    const url = new URL(window.location.href);
-    return url.searchParams.get(name) || "";
+  // =========================
+  // 1) CONFIG (EDIT THIS)
+  // =========================
+  const CONFIG = {
+    // Put your "Publish to web" CSV URL here:
+    // Example:
+    // "https://docs.google.com/spreadsheets/d/e/XXXXXXXXXXXX/pub?gid=0&single=true&output=csv"
+    CSV_URL: "PUT_YOUR_PUBLISHED_CSV_URL_HERE",
+
+    // Optional: auto-refresh (ms). Set 0 to disable.
+    AUTO_REFRESH_MS: 0,
+
+    // If your sheet headers differ, adjust FIELD_MAP below (recommended),
+    // otherwise normalization tries common Arabic/English variants.
+  };
+
+  // =========================
+  // 2) OPTIONAL FIELD MAP
+  // =========================
+  // If your CSV has fixed headers, you can map them here.
+  // Left side is the standard key we want; right side is your CSV header.
+  // Leave blank ("") to use auto-detection.
+  const FIELD_MAP = {
+    home: "",
+    away: "",
+    homeScore: "",
+    awayScore: "",
+    date: "",
+    time: "",
+    group: "",
+    round: "",
+    scorersHome: "",
+    scorersAway: "",
+    scorers: "",
+    varFlag: "",
+    varNotes: ""
+  };
+
+  // =========================
+  // 3) Utilities
+  // =========================
+  function cacheBust(url) {
+    const sep = url.includes("?") ? "&" : "?";
+    return url + sep + "t=" + Date.now();
   }
 
-  function showError(msg){
-    const el = qs('#loadError');
-    if(!el) return;
-    el.textContent = msg;
-    el.classList.remove('hidden');
+  async function fetchCSV(url) {
+    const res = await fetch(cacheBust(url), { cache: "no-store" });
+    if (!res.ok) throw new Error("CSV fetch failed: " + res.status);
+    return await res.text();
   }
 
-  // Basic CSV parser that supports quotes.
-  function parseCSV(text){
+  // CSV parser (supports quotes and commas inside cells)
+  function parseCSV(text) {
     const rows = [];
     let row = [];
-    let cur = "";
+    let cell = "";
     let inQuotes = false;
-    for(let i=0;i<text.length;i++){
-      const ch = text[i];
-      const next = text[i+1];
-      if(inQuotes){
-        if(ch === '"' && next === '"'){ cur += '"'; i++; continue; }
-        if(ch === '"'){ inQuotes = false; continue; }
-        cur += ch;
-      }else{
-        if(ch === '"'){ inQuotes = true; continue; }
-        if(ch === ','){ row.push(cur); cur=""; continue; }
-        if(ch === '\n'){ row.push(cur); rows.push(row); row=[]; cur=""; continue; }
-        if(ch === '\r'){ continue; }
-        cur += ch;
+
+    for (let i = 0; i < text.length; i++) {
+      const c = text[i];
+      const next = text[i + 1];
+
+      if (c === '"' && inQuotes && next === '"') { cell += '"'; i++; continue; }
+      if (c === '"') { inQuotes = !inQuotes; continue; }
+
+      if (c === "," && !inQuotes) { row.push(cell.trim()); cell = ""; continue; }
+
+      if ((c === "\n" || c === "\r") && !inQuotes) {
+        if (c === "\r" && next === "\n") i++;
+        row.push(cell.trim());
+        if (row.some(v => v !== "")) rows.push(row);
+        row = [];
+        cell = "";
+        continue;
+      }
+      cell += c;
+    }
+
+    row.push(cell.trim());
+    if (row.some(v => v !== "")) rows.push(row);
+
+    const header = rows.shift() || [];
+    return rows.map(r => {
+      const o = {};
+      header.forEach((h, idx) => { o[String(h || "").trim()] = (r[idx] ?? ""); });
+      return o;
+    });
+  }
+
+  function pick(r, candidates) {
+    for (const key of candidates) {
+      if (key && r[key] != null && String(r[key]).trim() !== "") return r[key];
+    }
+    return "";
+  }
+
+  function toInt(x) {
+    const n = parseInt(String(x).trim(), 10);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  function normalizeYesNo(v) {
+    const s = String(v ?? "").trim().toLowerCase();
+    return ["yes","y","true","1","✅","var","تم","نعم","نعم✅","yes✅"].includes(s);
+  }
+
+  function normalizeMatchRow(r) {
+    // If FIELD_MAP provided, use it first
+    const mapped = {};
+    for (const k in FIELD_MAP) {
+      const header = FIELD_MAP[k];
+      mapped[k] = header ? (r[header] ?? "") : "";
+    }
+
+    const home = mapped.home || pick(r, ["Home","TeamA","A","الفريق_أ","الفريق أ","الفريق A","الفريق1","الفريق 1","Team 1","Home Team","البيت","مضيف"]);
+    const away = mapped.away || pick(r, ["Away","TeamB","B","الفريق_ب","الفريق ب","الفريق B","الفريق2","الفريق 2","Team 2","Away Team","ضيف"]);
+
+    const homeScore = (mapped.homeScore !== "" ? toInt(mapped.homeScore) : null) ?? toInt(pick(r, ["HomeScore","A_Score","GoalsA","نتيجة_أ","نتيجة أ","أهداف_أ","Goals 1","ScoreA"]));
+    const awayScore = (mapped.awayScore !== "" ? toInt(mapped.awayScore) : null) ?? toInt(pick(r, ["AwayScore","B_Score","GoalsB","نتيجة_ب","نتيجة ب","أهداف_ب","Goals 2","ScoreB"]));
+
+    const date = mapped.date || pick(r, ["Date","MatchDate","التاريخ","تاريخ","يوم"]);
+    const time = mapped.time || pick(r, ["Time","MatchTime","الوقت","ساعة"]);
+    const group = mapped.group || pick(r, ["Group","المجموعة","GroupName"]);
+    const round = mapped.round || pick(r, ["Round","Stage","الدور","المرحلة"]);
+
+    const scorersHome = mapped.scorersHome || pick(r, ["ScorersHome","ScorersA","هدافو_أ","هدافو أ","هدافين_أ","Scorers 1"]);
+    const scorersAway = mapped.scorersAway || pick(r, ["ScorersAway","ScorersB","هدافو_ب","هدافو ب","هدافين_ب","Scorers 2"]);
+    const scorers = mapped.scorers || pick(r, ["Scorers","الهدافين","هدافين","Goalscorers"]);
+
+    const varFlagRaw = mapped.varFlag || pick(r, ["VAR","var","تقنية_VAR","تقنية var","فار","VarUsed"]);
+    const varNotes = mapped.varNotes || pick(r, ["VAR_Notes","VAR Notes","ملاحظات_VAR","ملاحظات var","VARReason"]);
+
+    return {
+      home: String(home).trim(),
+      away: String(away).trim(),
+      homeScore,
+      awayScore,
+      date: String(date).trim(),
+      time: String(time).trim(),
+      group: String(group).trim(),
+      round: String(round).trim(),
+      scorersHome: String(scorersHome).trim(),
+      scorersAway: String(scorersAway).trim(),
+      scorers: String(scorers).trim(),
+      var: normalizeYesNo(varFlagRaw),
+      varNotes: String(varNotes).trim()
+    };
+  }
+
+  // Compute top scorers from "محمد (2), علي (1)" OR "محمد-2;علي-1"
+  function computeTopScorers(matches) {
+    const map = new Map();
+
+    function addName(name, goals) {
+      const n = String(name || "").trim();
+      if (!n) return;
+      const g = Number.isFinite(goals) ? goals : 1;
+      map.set(n, (map.get(n) || 0) + g);
+    }
+
+    function parseLine(line) {
+      const s = String(line || "").trim();
+      if (!s) return;
+      const parts = s.split(/[,;]+/).map(x => x.trim()).filter(Boolean);
+      for (const p of parts) {
+        // name (n)
+        let m = p.match(/^(.+?)\s*\((\d+)\)\s*$/);
+        if (m) { addName(m[1], parseInt(m[2], 10)); continue; }
+        // name-n
+        m = p.match(/^(.+?)\s*[-:]\s*(\d+)\s*$/);
+        if (m) { addName(m[1], parseInt(m[2], 10)); continue; }
+        // fallback: 1 goal
+        addName(p, 1);
       }
     }
-    row.push(cur);
-    rows.push(row);
-    // trim empty last line
-    if(rows.length && rows[rows.length-1].length===1 && rows[rows.length-1][0].trim()===""){
-      rows.pop();
-    }
-    const headers = rows.shift().map(h => h.trim());
-    return rows.map(r => {
-      const obj = {};
-      headers.forEach((h, idx) => obj[h] = (r[idx] ?? "").trim());
-      return obj;
+
+    matches.forEach(m => {
+      parseLine(m.scorers);
+      parseLine(m.scorersHome);
+      parseLine(m.scorersAway);
     });
+
+    return Array.from(map.entries())
+      .map(([name, goals]) => ({ name, goals }))
+      .sort((a, b) => b.goals - a.goals);
   }
 
-  async function loadMatches(){
-    try{
-      const res = await fetch('data/matches.csv', { cache: 'no-store' });
-      if(!res.ok) throw new Error('لم أستطع تحميل data/matches.csv (تأكد أنه موجود في المشروع).');
-      const text = await res.text();
-      const data = parseCSV(text);
-      // normalize
-      return data.map(m => ({
-        group: (m.group || "").toUpperCase(),
-        round: m.round || "",
-        date: m.date || "",
-        time: m.time || "",
-        team1: m.team1 || "",
-        team2: m.team2 || "",
-        score1: m.score1 || "",
-        score2: m.score2 || "",
-        referee1: m.referee1 || "",
-        referee2: m.referee2 || "",
-        commentator: m.commentator || "",
-        player_of_match: m.player_of_match || "",
-        goals_team1: m.goals_team1 || "",
-        goals_team2: m.goals_team2 || "",
-        match_code: m.match_code || ""
-      })).filter(m => m.group && m.team1 && m.team2);
-    }catch(e){
-      showError(e.message || String(e));
-      return [];
-    }
+  function dispatchData(matches) {
+    const topScorers = computeTopScorers(matches);
+
+    // Global (for debugging/use by other scripts)
+    window.MBZ_DATA = { matches, topScorers };
+
+    // Event (recommended integration point)
+    document.dispatchEvent(new CustomEvent("mbz:data", { detail: { matches, topScorers } }));
+
+    // Backward-compatible calls (only if functions exist)
+    if (typeof window.renderMatches === "function") window.renderMatches(matches);
+    if (typeof window.renderScorers === "function") window.renderScorers(matches);
+    if (typeof window.renderTopScorers === "function") window.renderTopScorers(topScorers);
+    if (typeof window.renderVAR === "function") window.renderVAR(matches);
+    if (typeof window.initUI === "function") window.initUI(matches);
   }
 
-  function isPlayed(m){
-    return m.score1 !== "" && m.score2 !== "" && !isNaN(Number(m.score1)) && !isNaN(Number(m.score2));
-  }
-
-  function matchKey(m){
-    return `${m.date} ${m.time}`.trim();
-  }
-
-  function sortByDateTimeDesc(a,b){
-    const ka = matchKey(a);
-    const kb = matchKey(b);
-    return kb.localeCompare(ka);
-  }
-
-  function computeStandings(matches, group){
-    const gMatches = matches.filter(m => m.group === group);
-    const teams = new Set();
-    gMatches.forEach(m => { teams.add(m.team1); teams.add(m.team2); });
-
-    const table = {};
-    for(const t of teams){
-      table[t] = { team:t, P:0, W:0, D:0, L:0, GF:0, GA:0, GD:0, Pts:0 };
-    }
-
-    for(const m of gMatches){
-      if(!isPlayed(m)) continue;
-      const s1 = Number(m.score1);
-      const s2 = Number(m.score2);
-      const t1 = table[m.team1] || (table[m.team1] = { team:m.team1, P:0, W:0, D:0, L:0, GF:0, GA:0, GD:0, Pts:0 });
-      const t2 = table[m.team2] || (table[m.team2] = { team:m.team2, P:0, W:0, D:0, L:0, GF:0, GA:0, GD:0, Pts:0 });
-
-      t1.P++; t2.P++;
-      t1.GF += s1; t1.GA += s2;
-      t2.GF += s2; t2.GA += s1;
-
-      if(s1 > s2){ t1.W++; t2.L++; t1.Pts += 3; }
-      else if(s1 < s2){ t2.W++; t1.L++; t2.Pts += 3; }
-      else { t1.D++; t2.D++; t1.Pts += 1; t2.Pts += 1; }
-    }
-
-    for(const t of Object.values(table)){
-      t.GD = t.GF - t.GA;
-    }
-
-    const arr = Object.values(table);
-    arr.sort((a,b) => {
-      if(b.Pts !== a.Pts) return b.Pts - a.Pts;
-      if(b.GD !== a.GD) return b.GD - a.GD;
-      if(b.GF !== a.GF) return b.GF - a.GF;
-      return a.team.localeCompare(b.team, 'ar');
-    });
-    return arr;
-  }
-
-  function renderRecent(matches){
-    const tbl = qs('#tblRecent tbody');
-    const badge = qs('#matchesCount');
-    if(!tbl || !badge) return;
-    const sorted = [...matches].sort(sortByDateTimeDesc).slice(0, 10);
-    badge.textContent = String(matches.length);
-    tbl.innerHTML = sorted.map(m => {
-      const score = isPlayed(m) ? `${m.score1} - ${m.score2}` : '—';
-      const link = m.match_code ? `<a href="match.html?id=${encodeURIComponent(m.match_code)}">عرض</a>` : '—';
-      return `<tr>
-        <td>${escapeHTML(m.match_code)}</td>
-        <td>${escapeHTML(m.group)}</td>
-        <td>${escapeHTML(m.date)}</td>
-        <td>${escapeHTML(m.time)}</td>
-        <td>${escapeHTML(m.team1)}</td>
-        <td class="score">${escapeHTML(score)}</td>
-        <td>${escapeHTML(m.team2)}</td>
-        <td>${link}</td>
-      </tr>`;
-    }).join('');
-  }
-
-  function renderStandings(standings){
-    const tbody = qs('#tblStandings tbody');
-    const badge = qs('#grpBadge');
-    if(!tbody || !badge) return;
-    badge.textContent = String(standings.length);
-    tbody.innerHTML = standings.map((t, idx) => `
-      <tr>
-        <td>${idx+1}</td>
-        <td>${escapeHTML(t.team)}</td>
-        <td>${t.P}</td>
-        <td>${t.W}</td>
-        <td>${t.D}</td>
-        <td>${t.L}</td>
-        <td>${t.GF}</td>
-        <td>${t.GA}</td>
-        <td>${t.GD}</td>
-        <td>${t.Pts}</td>
-      </tr>
-    `).join('');
-  }
-
-  function groupMatchesByRound(matches, group){
-    const g = matches.filter(m => m.group === group);
-    const map = new Map();
-    for(const m of g){
-      const r = m.round || 'مباريات';
-      if(!map.has(r)) map.set(r, []);
-      map.get(r).push(m);
-    }
-    // sort rounds by common order (الأولى/الثانية/الثالثة) else keep
-    const order = ['الجولة الأولى','الجولة الثانية','الجولة الثالثة','الجولة الرابعة'];
-    const rounds = Array.from(map.keys()).sort((a,b) => {
-      const ia = order.indexOf(a);
-      const ib = order.indexOf(b);
-      if(ia !== -1 || ib !== -1) return (ia===-1?999:ia) - (ib===-1?999:ib);
-      return a.localeCompare(b,'ar');
-    });
-    rounds.forEach(r => map.get(r).sort((a,b) => matchKey(a).localeCompare(matchKey(b))));
-    return { rounds, map };
-  }
-
-  function renderGroupMatches(matches, group){
-    const wrap = qs('#matchesByRound');
-    const badge = qs('#matchesCount');
-    if(!wrap || !badge) return;
-    const { rounds, map } = groupMatchesByRound(matches, group);
-    const all = matches.filter(m => m.group===group);
-    badge.textContent = String(all.length);
-
-    wrap.innerHTML = rounds.map(r => {
-      const ms = map.get(r) || [];
-      const items = ms.map(m => {
-        const score = isPlayed(m) ? `${m.score1} - ${m.score2}` : '—';
-        const dt = [m.date, m.time].filter(Boolean).join(' • ');
-        const ref = [m.referee1, m.referee2].filter(Boolean).join(' / ') || '—';
-        const pom = m.player_of_match || '—';
-        const link = m.match_code ? `<a href="match.html?id=${encodeURIComponent(m.match_code)}">تفاصيل</a>` : '';
-        return `<div class="match-row">
-          <div class="pill">${escapeHTML(dt || '—')}</div>
-          <div class="dim">${escapeHTML(m.match_code || '')}</div>
-          <div>${escapeHTML(m.team1)}</div>
-          <div class="score">${escapeHTML(score)}</div>
-          <div>${escapeHTML(m.team2)}</div>
-          <div>${link}</div>
-          <div class="dim" style="grid-column: 1 / -1;">
-            حكم: ${escapeHTML(ref)} • أفضل لاعب: ${escapeHTML(pom)}
-          </div>
-        </div>`;
-      }).join('');
-      return `<div class="round">
-        <div class="round-title">${escapeHTML(r)}</div>
-        ${items || '<div class="muted">لا توجد مباريات</div>'}
-      </div>`;
-    }).join('');
-  }
-
-  function renderMatchPage(matches, matchCode){
-    const m = matches.find(x => x.match_code === matchCode);
-    if(!m){
-      showError('لم أجد هذه المباراة. تأكد من id في الرابط.');
+  async function loadDirectB() {
+    if (!CONFIG.CSV_URL || CONFIG.CSV_URL.includes("PUT_YOUR")) {
+      console.error("MBZ Direct B: Please set CONFIG.CSV_URL to your published CSV URL.");
       return;
     }
-    const set = (id, val) => { const el = qs('#'+id); if(el) el.textContent = val; };
-    set('matchTitle', `${m.team1} × ${m.team2}`);
-    set('matchCode', m.match_code);
-    set('matchGroup', m.group);
-    document.body.dataset.group = m.group;
-    set('matchRound', m.round || '—');
-    set('matchDate', m.date || '—');
-    set('matchTime', m.time || '—');
-
-    const ref = [m.referee1, m.referee2].filter(Boolean).join(' / ') || '—';
-    set('matchRef', ref);
-    set('matchComm', m.commentator || '—');
-    set('matchPOM', m.player_of_match || '—');
-    // VAR usage (0-2 per team)
-    const v1 = (m.var_team1===undefined || m.var_team1===null || m.var_team1==='') ? 0 : Number(m.var_team1);
-    const v2 = (m.var_team2===undefined || m.var_team2===null || m.var_team2==='') ? 0 : Number(m.var_team2);
-    set('matchVAR', `الفريق 1: ${isNaN(v1)?0:v1}/2 — الفريق 2: ${isNaN(v2)?0:v2}/2`);
-
-    const score = isPlayed(m) ? `${m.score1} - ${m.score2}` : 'لم تُلعب بعد';
-    const scoreLine = qs('#scoreLine');
-    if(scoreLine) scoreLine.textContent = `${m.team1}  ${score}  ${m.team2}`;
-
-    const back = qs('#backToGroup');
-    if(back) back.href = `group.html?g=${encodeURIComponent(m.group)}`;
-
-    const goals1 = qs('#goals1');
-    const goals2 = qs('#goals2');
-    if(goals1) goals1.innerHTML = renderGoalsList(m.goals_team1);
-    if(goals2) goals2.innerHTML = renderGoalsList(m.goals_team2);
+    const csv = await fetchCSV(CONFIG.CSV_URL);
+    const raw = parseCSV(csv);
+    const matches = raw.map(normalizeMatchRow).filter(m => m.home || m.away || m.date || m.group || m.round);
+    dispatchData(matches);
   }
 
-  function renderGoalsList(text){
-    const s = (text || '').trim();
-    if(!s) return '<li class="muted">—</li>';
-    // split by ; or newline
-    const parts = s.split(/;|\n|,|،|\||\/+/).map(x => x.trim()).filter(Boolean);
-    return parts.map(p => `<li>${escapeHTML(formatGoalItem(p))}</li>`).join('');
-  }
-
-
-  function formatGoalItem(p){
-    const t = String(p||'').trim();
-    if(!t) return '';
-    // normalize common minute notations: "Name 12" -> "Name (12')"
-    const m = t.match(/^(.*?)(?:\s*[\-:()]*\s*)(\d{1,3})(?:\s*['’]|\s*د|\s*min)?\s*$/);
-    if(m && m[1] && m[2]){
-      const name = m[1].trim().replace(/[\-:()]+$/,'').trim();
-      const minute = m[2].trim();
-      if(name) return `${name} (${minute}')`;
+  function start() {
+    loadDirectB().catch(err => console.error("MBZ Direct B error:", err));
+    if (CONFIG.AUTO_REFRESH_MS && CONFIG.AUTO_REFRESH_MS > 0) {
+      setInterval(() => loadDirectB().catch(() => {}), CONFIG.AUTO_REFRESH_MS);
     }
-    return t;
   }
 
-  function escapeHTML(str){
-    return String(str ?? '')
-      .replaceAll('&','&amp;')
-      .replaceAll('<','&lt;')
-      .replaceAll('>','&gt;')
-      .replaceAll('"','&quot;')
-      .replaceAll("'",'&#39;');
-  }
-
-  async function initIndex(){
-    const matches = await loadMatches();
-    renderRecent(matches);
-  }
-
-  async function initGroup(){
-    const g = (getParam('g') || 'A').toUpperCase();
-    const sub = qs('#pageSub'); if(sub) sub.textContent = `المجموعة ${g}`;
-    const title = qs('#grpTitle'); if(title) title.textContent = `الترتيب — المجموعة ${g}`;
-    const matches = await loadMatches();
-    const standings = computeStandings(matches, g);
-    renderStandings(standings);
-    renderGroupMatches(matches, g);
-  }
-
-  async function initMatch(){
-    const id = getParam('id');
-    const matches = await loadMatches();
-    renderMatchPage(matches, id);
-  }
-
-  return { initIndex, initGroup, initMatch };
+  document.addEventListener("DOMContentLoaded", start);
 })();
