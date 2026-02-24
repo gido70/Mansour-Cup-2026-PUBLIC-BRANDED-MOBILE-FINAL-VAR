@@ -22,7 +22,7 @@
     // Put your "Publish to web" CSV URL here:
     // Example:
     // "https://docs.google.com/spreadsheets/d/e/XXXXXXXXXXXX/pub?gid=0&single=true&output=csv"
-    CSV_URL: "PUT_YOUR_PUBLISHED_CSV_URL_HERE",
+   CSV_URL: "https://docs.google.com/spreadsheets/d/e/2PACX-1vSNFHuQ2sy9ZhlyRopgYVh-y6dISOIhfUIk43ei6Mdasm2WiKgTXleVULvF5OceGw/pub?output=csv",
 
     // Optional: auto-refresh (ms). Set 0 to disable.
     AUTO_REFRESH_MS: 0,
