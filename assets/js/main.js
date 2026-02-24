@@ -239,4 +239,16 @@
   }
 
   document.addEventListener("DOMContentLoaded", start);
+  // ====== BRIDGE TO OLD UI STRUCTURE ======
+document.addEventListener("mbz:data", function (e) {
+  const matches = e.detail.matches;
+
+  if ("matchesData" in window) window.matchesData = matches;
+  if ("ALL_MATCHES" in window) window.ALL_MATCHES = matches;
+  if ("MATCHES" in window) window.MATCHES = matches;
+
+  if (typeof window.renderAll === "function") window.renderAll();
+  if (typeof window.renderHome === "function") window.renderHome();
+  if (typeof window.init === "function") window.init();
+});
 })();
