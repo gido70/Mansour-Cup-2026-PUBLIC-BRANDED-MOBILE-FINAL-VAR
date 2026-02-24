@@ -14,6 +14,7 @@
 
 (function () {
   "use strict";
+  window.CupApp = window.CupApp || {};
 
   // =========================
   // 1) CONFIG (EDIT THIS)
@@ -130,19 +131,18 @@
       mapped[k] = header ? (r[header] ?? "") : "";
     }
 
-    const home = mapped.home || pick(r, ["Home","TeamA","A","الفريق_أ","الفريق أ","الفريق A","الفريق1","الفريق 1","Team 1","Home Team","البيت","مضيف"]);
-    const away = mapped.away || pick(r, ["Away","TeamB","B","الفريق_ب","الفريق ب","الفريق B","الفريق2","الفريق 2","Team 2","Away Team","ضيف"]);
+   const home = mapped.home || pick(r, ["team1","Home","TeamA","A","الفريق_أ","الفريق أ","الفريق A","الفريق1","الفريق 1","Team 1","Home Team","البيت","مضيف"]);
+const away = mapped.away || pick(r, ["team2","Away","TeamB","B","الفريق_ب","الفريق ب","الفريق B","الفريق2","الفريق 2","Team 2","Away Team","ضيف"]);
 
-    const homeScore = (mapped.homeScore !== "" ? toInt(mapped.homeScore) : null) ?? toInt(pick(r, ["HomeScore","A_Score","GoalsA","نتيجة_أ","نتيجة أ","أهداف_أ","Goals 1","ScoreA"]));
-    const awayScore = (mapped.awayScore !== "" ? toInt(mapped.awayScore) : null) ?? toInt(pick(r, ["AwayScore","B_Score","GoalsB","نتيجة_ب","نتيجة ب","أهداف_ب","Goals 2","ScoreB"]));
-
+    const homeScore = (mapped.homeScore !== "" ? toInt(mapped.homeScore) : null) ?? toInt(pick(r, ["score1","HomeScore","A_Score","GoalsA","نتيجة_أ","نتيجة أ","أهداف_أ","Goals 1","ScoreA"]));
+const awayScore = (mapped.awayScore !== "" ? toInt(mapped.awayScore) : null) ?? toInt(pick(r, ["score2","AwayScore","B_Score","GoalsB","نتيجة_ب","نتيجة ب","أهداف_ب","Goals 2","ScoreB"]));
     const date = mapped.date || pick(r, ["Date","MatchDate","التاريخ","تاريخ","يوم"]);
     const time = mapped.time || pick(r, ["Time","MatchTime","الوقت","ساعة"]);
     const group = mapped.group || pick(r, ["Group","المجموعة","GroupName"]);
     const round = mapped.round || pick(r, ["Round","Stage","الدور","المرحلة"]);
 
-    const scorersHome = mapped.scorersHome || pick(r, ["ScorersHome","ScorersA","هدافو_أ","هدافو أ","هدافين_أ","Scorers 1"]);
-    const scorersAway = mapped.scorersAway || pick(r, ["ScorersAway","ScorersB","هدافو_ب","هدافو ب","هدافين_ب","Scorers 2"]);
+    const scorersHome = mapped.scorersHome || pick(r, ["scorers_team1","ScorersHome","ScorersA","هدافو_أ","هدافو أ","هدافين_أ","Scorers 1"]);
+const scorersAway = mapped.scorersAway || pick(r, ["scorers_team2","ScorersAway","ScorersB","هدافو_ب","هدافو ب","هدافين_ب","Scorers 2"]);
     const scorers = mapped.scorers || pick(r, ["Scorers","الهدافين","هدافين","Goalscorers"]);
 
     const varFlagRaw = mapped.varFlag || pick(r, ["VAR","var","تقنية_VAR","تقنية var","فار","VarUsed"]);
